@@ -1,0 +1,413 @@
+// RestaurantHub — Step 2: Complete database schema
+// PostgreSQL · Prisma ORM
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  SUPER_ADMIN
+  BRANCH_ADMIN
+  STAFF
+  CUSTOMER
+}
+
+enum TableStatus {
+  AVAILABLE
+  OCCUPIED
+  RESERVED
+  MAINTENANCE
+}
+
+enum ReservationStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+enum EventBookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  REJECTED
+}
+
+enum EventType {
+  WEDDING
+  BIRTHDAY
+  CHRISTENING
+  CORPORATE
+  SEMINAR
+  ANNIVERSARY
+}
+
+enum BookingType {
+  RESERVATION
+  EVENT_BOOKING
+}
+
+enum PaymentMethod {
+  CARD
+  GCASH
+  PAYMAYA
+  CASH
+  BANK_TRANSFER
+  PAYMONGO
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  CANCELLED
+}
+
+// ─── Auth (NextAuth.js — optional OAuth alongside credentials) ───────────────
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ─── 1. Users ────────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  password      String? // bcrypt hash; null when using OAuth-only
+  role          UserRole  @default(CUSTOMER)
+  branchId      String? // assigned branch for BRANCH_ADMIN / STAFF
+  phone         String?
+  image         String?
+  emailVerified DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  branch        Branch?        @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  accounts      Account[]
+  sessions      Session[]
+  reservations  Reservation[]  @relation("CustomerReservations")
+  eventBookings EventBooking[] @relation("CustomerEventBookings")
+  notifications     Notification[]
+  notificationJobs  NotificationJob[]
+
+  @@index([role])
+  @@index([branchId])
+  @@map("users")
+}
+
+// ─── 2. Branches ─────────────────────────────────────────────────────────────
+
+model Branch {
+  id           String   @id @default(cuid())
+  name         String
+  slug         String   @unique
+  address      String
+  phone        String
+  email        String
+  openingHours Json // { monday: { open, close, closed }, ... }
+  image        String?
+  isMainBranch Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tables       Table[]
+  reservations Reservation[]
+  eventVenues  EventVenue[]
+  staff        User[]
+
+  @@index([isMainBranch])
+  @@map("branches")
+}
+
+// ─── 3. Tables ───────────────────────────────────────────────────────────────
+
+model Table {
+  id          String      @id @default(cuid())
+  branchId    String
+  tableNumber String
+  capacity    Int
+  status      TableStatus @default(AVAILABLE)
+  floor       Int         @default(1)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  branch       Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  reservations Reservation[]
+
+  @@unique([branchId, tableNumber])
+  @@index([branchId, status])
+  @@index([branchId, floor])
+  @@map("tables")
+}
+
+// ─── 4. Reservations ─────────────────────────────────────────────────────────
+
+model Reservation {
+  id              String            @id @default(cuid())
+  customerId      String
+  branchId        String
+  tableId         String?
+  guestCount      Int
+  reservationDate DateTime          @db.Date
+  reservationTime String // e.g. "18:30"
+  status          ReservationStatus @default(PENDING)
+  notes           String?
+  depositAmount   Decimal?          @db.Decimal(10, 2)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  customer User      @relation("CustomerReservations", fields: [customerId], references: [id], onDelete: Cascade)
+  branch   Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  table    Table?    @relation(fields: [tableId], references: [id], onDelete: SetNull)
+  payments Payment[]
+
+  @@index([branchId, reservationDate, status])
+  @@index([customerId])
+  @@index([tableId])
+  @@index([status])
+  @@map("reservations")
+}
+
+// ─── 5. Event Venues ─────────────────────────────────────────────────────────
+
+model EventVenue {
+  id          String   @id @default(cuid())
+  branchId    String
+  slug        String   @unique
+  name        String
+  tagline     String?
+  capacity    Int
+  floor       Int      @default(2)
+  description String?  @db.Text
+  image       String?
+  gallery     String[]
+  amenities   String[]
+  price       Decimal  @db.Decimal(10, 2) // starting price
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  branch   Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  packages EventPackage[]
+  bookings EventBooking[]
+
+  @@index([branchId])
+  @@map("event_venues")
+}
+
+model EventPackage {
+  id          String   @id @default(cuid())
+  venueId     String
+  name        String
+  slug        String
+  description String?  @db.Text
+  price       Decimal  @db.Decimal(10, 2)
+  features    String[]
+  maxGuests   Int?
+  isFeatured  Boolean  @default(false)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  venue    EventVenue     @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  bookings EventBooking[]
+
+  @@unique([venueId, slug])
+  @@index([venueId])
+  @@map("event_packages")
+}
+
+// ─── 6. Event Bookings ───────────────────────────────────────────────────────
+
+model EventBooking {
+  id            String             @id @default(cuid())
+  customerId    String
+  venueId       String
+  packageId     String?
+  eventType     EventType
+  guestCount    Int
+  eventDate     DateTime           @db.Date
+  startTime     String
+  endTime       String
+  status        EventBookingStatus @default(PENDING)
+  packageName   String?
+  totalPrice    Decimal            @db.Decimal(10, 2)
+  depositAmount Decimal?           @db.Decimal(10, 2)
+  contactPhone  String?
+  notes         String?            @db.Text
+  adminNotes    String?            @db.Text
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  customer User          @relation("CustomerEventBookings", fields: [customerId], references: [id], onDelete: Cascade)
+  venue    EventVenue    @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  package  EventPackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  payments Payment[]
+
+  @@index([venueId, eventDate, status])
+  @@index([customerId])
+  @@index([status])
+  @@map("event_bookings")
+}
+
+// ─── 7. Payments ─────────────────────────────────────────────────────────────
+
+model Payment {
+  id                  String        @id @default(cuid())
+  bookingType         BookingType
+  bookingId           String // reservation id or event booking id
+  amount              Decimal       @db.Decimal(10, 2)
+  paymentMethod       PaymentMethod
+  paymentStatus       PaymentStatus @default(PENDING)
+  transactionId       String?       @unique
+  paymongoSessionId   String?       @unique
+  failureReason       String?       @db.Text
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  reservationId  String?
+  eventBookingId String?
+
+  reservation  Reservation?  @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  eventBooking EventBooking? @relation(fields: [eventBookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingType, bookingId])
+  @@index([paymentStatus])
+  @@index([reservationId])
+  @@index([eventBookingId])
+  @@map("payments")
+}
+
+// ─── 8. Notifications ────────────────────────────────────────────────────────
+
+enum NotificationChannel {
+  EMAIL
+  SMS
+  IN_APP
+}
+
+enum NotificationJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum NotificationType {
+  RESERVATION_CONFIRMATION
+  EVENT_BOOKING_CONFIRMATION
+  PAYMENT_RECEIPT
+  BOOKING_REMINDER
+  CANCELLATION_NOTICE
+  PASSWORD_RESET
+  EVENT_INQUIRY
+  PAYMENT_FAILED
+  OTP_VERIFICATION
+  RESERVATION_REMINDER_SMS
+  DEPOSIT_PENDING
+  STATUS_UPDATE
+}
+
+model NotificationJob {
+  id             String                @id @default(cuid())
+  type           NotificationType
+  channel        NotificationChannel
+  status         NotificationJobStatus @default(PENDING)
+  recipientEmail String?
+  recipientPhone String?
+  userId         String?
+  payload        Json
+  attempts       Int                   @default(0)
+  maxAttempts    Int                   @default(3)
+  scheduledAt    DateTime              @default(now())
+  lastError      String?               @db.Text
+  idempotencyKey String?               @unique
+  sentAt         DateTime?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([status, scheduledAt])
+  @@index([type])
+  @@map("notification_jobs")
+}
+
+model Notification {
+  id        String            @id @default(cuid())
+  userId    String
+  title     String
+  message   String            @db.Text
+  type      NotificationType?
+  isRead    Boolean           @default(false)
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+model OtpVerification {
+  id        String   @id @default(cuid())
+  phone     String
+  codeHash  String
+  purpose   String   @default("verification")
+  expiresAt DateTime
+  verified  Boolean  @default(false)
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([phone, purpose])
+  @@map("otp_verifications")
+}
